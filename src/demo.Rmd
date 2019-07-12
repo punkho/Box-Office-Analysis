@@ -1,0 +1,304 @@
+---
+title: "基于社交媒体的电影票房分析"
+author: "2017263218-范冲冲"
+date: "2017年10月22日"
+output: html_document
+---
+
+##报告主题
+本报告为了解决以下几点问题：
+
+1. 分析社交媒体上对电影的评分与火爆程度（评论人数）和电影票房的关联。
+2. 分析在热门的社交媒体上哪些类型的电影更受欢迎，票房成绩更好。
+3. 分析在热门的社交媒体上哪些电影演员更受欢迎，上榜数量多。
+4. 基于支持向量机（SVM），建立电影票房评价的支持向量分类模型，并检验准确率。
+
+##数据来源
+本报告对[`豆瓣【中国内地电影票房总排行】`](https://www.douban.com/doulist/1295618/)网站进行爬虫，主要采集以下几方面的数据，爬虫代码见`代码`部分的`crawl.R`。
+
+* 排名 `Rank`
+* 电影名 `Title`
+* 评分 `Rating`
+* 评论人数 `Appraise`
+* 导演 `Director`
+* 主演 `Actor`
+* 类型 `Type`
+* 制片国家/地区 `Area`
+* 票房 `Sales`
+* 上映日期 `Date`
+* 发行类别 `Publish`
+
+##分析思路
+####分析思路1
+* 电影评分`Rating`为十分制，存在一位小数，且1分、2分左右的电影数量少，因此可以将电影划分成低于3分、3-5分、5-6分、6-7分、7-8分、8-9分、高于9分这7个等级，统计得到每个等级对应的平均票房、社交媒体上的平均评论人数，绘制相关柱形图，分析平均票房与评分、平均评论人数与评分的相关关系。
+  
+####分析思路2
+* 统计该排行中各类型`Type`上榜电影的数量，并统计各类型电影的总票房，绘制相关饼图，分析更受欢迎和更卖座的电影类型。因为提取到的电影类型`Type`是以诸如“喜剧/爱情/奇幻”等多类型存储，所以对应的该部电影在三个类别中均上榜，但在计算票房时需按照类别数将票房均分。
+  
+####分析思路3
+* 统计该排行中各主演`Actor`的出现次数，并绘制词云，因出现1次的演员数量过多且意义不大，所以绘制出现次数2次及以上的主演的词云。
+  
+####分析思路4
+* 将影响电影票房的因素作数字化与归一化处理，使用支持向量机（SVM）训练预处理后的电影相关数据，建立有关票房评价的分类模型，并检验分类模型的准确率。
+
+##计算过程
+以下是数据分析和数据挖掘过程
+
+1. 基本统计分析
+* 导入相关的包
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Import packages 
+library(recharts)
+library(wordcloud2)
+library(stringr)
+library(plyr)
+library(DT)
+```
+
+* 读入电影的相关数据，并去掉无意义项
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Read the data
+movies<-read.csv("..\\data\\movies.csv")
+# Delete invalid information
+movies<-na.omit(movies)
+```
+
+a. 统计不同评分下电影的票房与社交媒体上的评价人数：
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# ---------- Draw the histogram of Sales_avg and Appraise_avg in different ratings ----------
+# Divide ratings into seven ranks 
+rating_1<-subset(movies,Rating<=3)
+rating_2<-subset(movies,Rating>3 & Rating<=5)
+rating_3<-subset(movies,Rating>5 & Rating<=6)
+rating_4<-subset(movies,Rating>6 & Rating<=7)
+rating_5<-subset(movies,Rating>7 & Rating<=8)
+rating_6<-subset(movies,Rating>8 & Rating<=9)
+rating_7<-subset(movies,Rating>9)
+
+# Build a new frame for different ratings about Sales_avg and Appraise_avg
+rating_df<-data.frame(Rating=c("0~3","3~5","5~6","6~7","7~8","8~9","9~10"),
+                      Sales_avg=c(mean(rating_1$Sales),mean(rating_2$Sales),
+                                  mean(rating_3$Sales),mean(rating_4$Sales),
+                                  mean(rating_5$Sales),mean(rating_6$Sales),
+                                  mean(rating_7$Sales)),
+                      Appraise_avg=c(mean(rating_1$Appraise),mean(rating_2$Appraise),
+                                     mean(rating_3$Appraise),mean(rating_4$Appraise),
+                                     mean(rating_5$Appraise),mean(rating_6$Appraise),
+                                     mean(rating_7$Appraise)))
+```
+
+* 绘制不同评分电影平均票房数柱状图
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Draw the histogram of Sales_avg in different ratings
+Sales_eBar<-eBar(rating_df,~Rating,~Sales_avg)+
+  eTitle(title="各评分电影平均票房数柱状图")+
+  eLegend(show=FALSE)
+Sales_eBar
+```
+
+* 绘制不同评分电影平均评论数柱状图
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Draw the histogram of Appraise_avg in different ratings
+Appraise_eBar<-eBar(rating_df,~Rating,~Appraise_avg)+
+  eTitle(title="各评分电影平均评论数柱状图")+
+  eLegend(show=FALSE)
+Appraise_eBar
+```
+
+b. 统计不同类型电影的上榜数量与所占总票房：
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# ---------- Draw the pie chart of types and sales of types ----------
+# Extract the type column and divide by /
+type<-movies$Type
+type<-as.character(type)
+type<-strsplit(type,"/")
+# Extract the sales column
+sales<-movies$Sales
+
+# Create two new lists of type and sales
+type_list<-list()
+sales_list<-list()
+for(i in 1:nrow(movies)) {
+  for(j in 1:length(type[[i]])) {
+    # Take the every type of each movie and combine it into a new list
+    add_list<-list(type[[i]][j])
+    type_list<-c(type_list,add_list)
+    # Divide the box office of each movies by number of types 
+    add_list<-list(sales[[i]]/length(type[[i]]))
+    sales_list<-c(sales_list,add_list)
+  }
+}
+
+# Build two new frames for type and sales
+type_df<-data.frame(unlist(type_list))
+sales_df<-data.frame(unlist(sales_list))
+# Insert the ID column into type_df and sales_df
+ID<-c(1:nrow(type_df))
+type_df<-data.frame(ID,type_df)
+sales_df<-data.frame(ID,sales_df)
+# Merge two data frame by "ID" and delete invalid information
+type_sales_df<-merge(type_df,sales_df,by="ID")
+type_sales_df<-na.omit(type_sales_df)
+
+# Add frequency in type data frame
+type_df<-count(type_df$unlist.type_list.)
+# Delete invalid information for the last items 
+type_df<-type_df[-nrow(type_df),]
+# In descending order
+type_df<-type_df[order(type_df$freq,decreasing=T),]
+
+# Create a new data frame of sales in each type
+sum_sales_list<-list()
+for(i in 1:nrow(type_df)) {
+  sum_sales<-0
+  for(j in 1:nrow(type_sales_df)) {
+    if(type_sales_df$unlist.type_list.[j]==type_df$x[i]) {
+      sum_sales<-sum_sales+type_sales_df$unlist.sales_list.[j]
+    }
+  }
+  sum_sales_list[i]<-sum_sales
+}
+sum_sales_df<-data.frame(type_df$x,unlist(sum_sales_list))
+```
+
+* 绘制各类型电影上榜数量饼图
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Draw the pie chart of the number of type 
+type_ePie<-ePie(type_df,size=c(650, 430))+eLegend(orient="vertical")+
+  eTitle(title="各类型电影上榜数量饼图")
+type_ePie
+```
+
+* 绘制各类型电影所占票房饼图
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Draw the pie chart of sales in different types
+type_sales_ePie<-ePie(sum_sales_df,size=c(650, 430))+eLegend(orient="vertical")+
+  eTitle(title="各类型电影票房饼图")
+type_sales_ePie
+```
+
+c. 统计电影主演的出现次数：
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# ---------- Draw the cloud of actors ----------
+# Extract the actor column and divide by /
+actor<-movies$Actor
+actor<-as.character(actor)
+actor<-strsplit(actor,"/")
+
+# Take the every actor of each movie and combine it into a new list
+actor_list<-list()
+for(i in 1:nrow(movies)) {
+  add_list<-list(actor[[i]][1],actor[[i]][2],actor[[i]][3])
+  actor_list<-c(actor_list,add_list)
+}
+
+# Build a new frame for actors 
+actor_df<-data.frame(unlist(actor_list))
+# Add frequency in actor data frame
+actor_df<-count(actor_df$unlist.actor_list.)
+# Delete invalid information for the head and tail
+actor_df<-actor_df[-c(1:7),]
+actor_df<-na.omit(actor_df)
+
+# Extract the actor which appeared more than twice
+actor_df<-actor_df[which(actor_df$freq >= 2),]
+# In descending order
+actor_df<-actor_df[order(actor_df$freq,decreasing=T),]
+```
+
+* 绘制电影主演的词云
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Draw the cloud
+wordcloud2(actor_df,size=0.3,minRotation=-pi/6,maxRotation=pi/6,rotateRatio=0.9)
+```
+
+2. 机器学习
+* 数据预处理：  
+提取电影的评分`Rating`、评价人数`Appraise`属性，并将电影的导演`Director`、主演`Actor`、类型`Type`、制片国家/地区`Area`、发行类别`Publish`数字化，将票房`Sales`按照10亿以上、1亿-10亿、5千万-1亿、低于5千万分成四个评价`Evaluate`：Excellent、Good、Normal、Bad，并对相关属性作归一化处理，归一化的方法采用min-max标准化，最终建立数字化的电影数据表。相关代码见`代码`部分的`digitization.R`。
+* 导入支持向量机（SVM）的相关包
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Import packages 
+library(ISLR)
+library(e1071)
+```
+
+* 读入电影的数字化数据
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Read the digital data
+digital_movies<-read.csv("..\\data\\digital_movies.csv")
+```
+
+* 建立特征向量与结果变量：  
+以评分`Rating`、评价人数`Appraise`、导演`Director`、主演`Actor`、类型`Type`、制片国家/地区`Area`、发行类别`Publish`为特征向量，以评价`Evaluate`为结果变量。
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Extract the data except column 1,3 and 10 as feature vector
+x=digital_movies[,-c(1,3,10)]
+# Extract the data from column 10 as outcome variable
+y=digital_movies[,10]
+```
+
+* 建立支持向量模型：  
+训练数据为所有数据，核函数为多项式核函数`polynomial`，损失函数参数`coef0`为2。
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Build model: the kernel is polynomial kernel
+model=svm(x,y,kernel="polynomial",gamma=if(is.vector(x)) 1 else 1/ncol(x),coef0=2)
+```
+
+* 模型`model`的相关信息
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+summary(model)
+```
+
+* 检验训练数据
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Test with train data
+pred<-predict(model,x)
+# Check accuracy
+table(pred,y)
+```
+
+* 计算模型准确率
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Calculate accuracy
+table<-as.data.frame(table(pred,y))
+count<-0
+for(i in 1:nrow(table)) {
+  if(table$pred[i] == table$y[i]) {
+    count<-count+table$Freq[i]
+  }
+}
+accuracy<-count/nrow(x)
+accuracy
+```
+
+* 可视化结果
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Visualize (classes by color, SV by crosses):
+plot(cmdscale(dist(x)),
+     col=c("purple","red","orange","green")[as.integer(y)],
+     pch=c("。","+")[1:200 %in% model$index+1])
+legend(-0.96,-0.35,c("Bad","Excellent","Good","Normal"),
+       col=c("purple","red","orange","green"),lty=1)
+```
+
+3. 数据展示
+* 交互式表格，展示前100组数据
+```{r,echo=TRUE, message=FALSE, warning=FALSE}
+# Interactive table for showing data 
+DT::datatable(movies %>% head(100)) 
+```
+
+##结论
+本分析报告结论如下：
+
+####结论1  
+* 由柱形图可以看出，评分与电影票房总体呈正相关趋势，评分越高的电影票房成绩越好；而评分与火爆程度（评论人数）总体也呈正相关趋势，评分越高的电影评论人数多，在社交媒体上热度较高。
+  
+####结论2  
+* 由饼图可以看出，动作、剧情、喜剧、冒险为当下比较受欢迎的电影类型，上榜数量多；而同样的，这些类型电影收获的票房也更高；但其中可以看出，喜剧在数量少于剧情但票房却高于剧情，说明喜剧类电影较剧情类而言更为卖座。
+  
+####结论3
+* 由词云可以看出，古天乐、刘德华、甄子丹、黄渤、成龙上榜的次数最多，这与时下比较热门的“小鲜肉当道”的说法存在一定差异，老牌表演艺术家仍是电影主演的主力军。
+  
+####结论4  
+* 从支持向量机（SVM）模型的相关信息中可得知，共有611组支持向量（SV），在Bad、Excellent、Good、Normal四类中分别为28、242、211、130。由检验训练数据后的结果可以看出，在Bad、Excellent、Good、Normal四类中分别有86、24、428、97组数据分类正确，模型的准确率为72.82%。将结果可视化，可以看出数据总体分成四个簇，每个簇按照Bad、Normal、Good、Excellent从上至下分布，由于相互之间分布较为紧密，因此存在一定的分类误差。 
